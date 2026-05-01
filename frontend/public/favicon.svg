@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="22" fill="#ffffff"/>
+  <!-- YouTube shape -->
+  <path d="M72,30 H28 c-8.8,0 -16,7.2 -16,16 v8 c0,8.8 7.2,16 16,16 h44 c8.8,0 16,-7.2 16,-16 v-8 c0,-8.8 -7.2,-16 -16,-16 z" fill="#da0f22"/>
+  <!-- Play triangle -->
+  <polygon points="42,40 42,60 58,50" fill="#ffffff"/>
+  <!-- Server stacks -->
+  <rect x="68" y="36" width="20" height="6" rx="3" fill="#1b1c20"/>
+  <rect x="68" y="47" width="20" height="6" rx="3" fill="#1b1c20"/>
+  <rect x="68" y="58" width="20" height="6" rx="3" fill="#1b1c20"/>
+  <!-- Server dots -->
+  <circle cx="82" cy="39" r="1.5" fill="#ffffff"/>
+  <circle cx="82" cy="50" r="1.5" fill="#ffffff"/>
+  <circle cx="82" cy="61" r="1.5" fill="#ffffff"/>
+</svg>

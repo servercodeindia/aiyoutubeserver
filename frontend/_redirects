@@ -1,0 +1,5 @@
+# Netlify Redirects File
+# Redirect API calls to backend on Render
+
+/api/*  https://youtubeserver-backend.onrender.com/api/:splat  200
+/*      /index.html                                              200

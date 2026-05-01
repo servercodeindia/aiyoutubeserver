@@ -1,0 +1,27 @@
+# Render Configuration for YouTubeServer Backend
+
+services:
+  - type: web
+    name: youtubeserver-backend
+    env: node
+    region: oregon  # Choose: oregon, frankfurt, singapore
+    plan: free  # Options: free, starter, standard, pro
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: FRONTEND_URL
+        value: https://youtubeserver.netlify.app
+    autoDeploy: true
+    
+    # Scaling configuration (for paid plans)
+    # numInstances: 2
+    # scaling:
+    #   minInstances: 1
+    #   maxInstances: 10
+    #   targetMemoryPercent: 80
+    #   targetCPUPercent: 80
