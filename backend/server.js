@@ -834,37 +834,104 @@ app.get('/api/download', async (req, res) => {
     };
 
     let info;
+    let directUrl = null;
+    
+    // Strategy 1: Try yt-dlp with multiple client types
     const strategies = [
       { name: 'Android', args: 'youtube:player_client=android' },
       { name: 'iOS', args: 'youtube:player_client=ios' },
       { name: 'Web Embedded', args: 'youtube:player_client=web_embedded' },
+      { name: 'TV Embedded', args: 'youtube:player_client=tv_embedded' },
     ];
 
-    // Try multiple strategies
     for (const strat of strategies) {
       try {
         console.log(`  ↳ Trying ${strat.name}...`);
         info = await youtubedl(url, { ...dlFlags, extractorArgs: strat.args });
-        console.log(`  ✓ Got URL with ${strat.name}`);
-        break;
+        directUrl = info.url || info.formats?.[0]?.url;
+        if (directUrl) {
+          console.log(`  ✓ Got URL with ${strat.name}`);
+          break;
+        }
       } catch (e) {
         console.log(`  ✗ ${strat.name} failed: ${e.message}`);
-        if (strat === strategies[strategies.length - 1]) {
-          throw new Error('All download strategies failed. YouTube may be blocking this server.');
+      }
+    }
+
+    // Strategy 2: If yt-dlp fails, try direct Innertube API
+    if (!directUrl) {
+      console.log(`  ↳ yt-dlp failed, trying Innertube API...`);
+      const videoId = extractVideoId(url);
+      if (videoId) {
+        try {
+          const ytInfo = await getYouTubeInfoFast(videoId);
+          
+          // Find the best matching format
+          let selectedFormat = null;
+          if (isAudio) {
+            // Get best audio format
+            selectedFormat = ytInfo.formats
+              .filter(f => f.acodec !== 'none' && f.vcodec === 'none')
+              .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
+          } else {
+            const targetHeight = parseInt(quality) || 720;
+            // Get best video format with audio at target quality
+            selectedFormat = ytInfo.formats
+              .filter(f => f.height && f.height <= targetHeight && f.acodec !== 'none')
+              .sort((a, b) => b.height - a.height)[0];
+            
+            // Fallback to any video format at target quality
+            if (!selectedFormat) {
+              selectedFormat = ytInfo.formats
+                .filter(f => f.height && f.height <= targetHeight)
+                .sort((a, b) => b.height - a.height)[0];
+            }
+          }
+          
+          if (selectedFormat && selectedFormat.url) {
+            directUrl = selectedFormat.url;
+            console.log(`  ✓ Got URL from Innertube API`);
+          }
+        } catch (e) {
+          console.log(`  ✗ Innertube API failed: ${e.message}`);
         }
       }
     }
 
-    if (!info) {
-      throw new Error('Failed to get download URL');
+    // Strategy 3: Last resort - try a simple direct approach
+    if (!directUrl) {
+      console.log(`  ↳ Trying simple direct method...`);
+      const videoId = extractVideoId(url);
+      if (videoId) {
+        try {
+          // Use a simple format selector that yt-dlp can handle
+          const simpleFlags = {
+            dumpJson: true,
+            skipDownload: true,
+            format: isAudio ? 'bestaudio' : 'best',
+            noWarnings: true,
+            noCheckCertificates: true,
+            noPlaylist: true,
+            socketTimeout: 15,
+            retries: 1,
+          };
+          
+          const simpleInfo = await youtubedl(url, simpleFlags);
+          directUrl = simpleInfo.url || simpleInfo.formats?.[0]?.url;
+          if (directUrl) {
+            console.log(`  ✓ Got URL with simple method`);
+          }
+        } catch (e) {
+          console.log(`  ✗ Simple method failed: ${e.message}`);
+        }
+      }
     }
 
-    // Extract the direct URL
-    const directUrl = info.url || info.formats?.[0]?.url;
-    
     if (!directUrl) {
-      console.error(`  ✗ No direct URL found`);
-      return res.status(500).json({ error: 'Could not get download URL' });
+      console.error(`  ✗ All download methods failed`);
+      return res.status(500).json({ 
+        error: 'Unable to download this video. YouTube is blocking requests from this server. Please try again later or try a different video.' 
+      });
     }
 
     console.log(`  ✓ Direct URL obtained, proxying download...`);
@@ -913,7 +980,21 @@ app.get('/api/download', async (req, res) => {
 
   } catch (err) {
     console.error('  ✗ Download error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'Download failed. Please try again.' });
+    
+    let errorMsg = 'Download failed. Please try again.';
+    if (err.message.includes('blocking')) {
+      errorMsg = 'YouTube is blocking downloads from this server. Please try again in 10-15 minutes.';
+    } else if (err.message.includes('Sign in')) {
+      errorMsg = 'YouTube requires authentication for this video. Please try again later.';
+    } else if (err.message.includes('Timeout')) {
+      errorMsg = 'Download request timed out. Please try again.';
+    } else if (err.message.includes('unavailable')) {
+      errorMsg = 'This video is unavailable or has been removed.';
+    }
+    
+    if (!res.headersSent) {
+      res.status(500).json({ error: errorMsg });
+    }
   }
 });
 
