@@ -285,8 +285,98 @@ function getCookieArgsForExec() {
 }
 
 /**
- * Fallback: get basic video info from YouTube's oEmbed endpoint.
- * This always works without cookies but gives no format/download info.
+ * Fallback: Use YouTube Data API v3 (official, requires API key)
+ * Free tier: 10,000 quota units/day (about 3,000 video info requests)
+ */
+async function getYouTubeDataAPIInfo(videoId) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    throw new Error('YouTube API key not configured');
+  }
+
+  const apiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${apiKey}`;
+  
+  const data = await fetchUrl(apiUrl);
+  const response = JSON.parse(data);
+  
+  if (!response.items || response.items.length === 0) {
+    throw new Error('Video not found');
+  }
+  
+  const video = response.items[0];
+  const snippet = video.snippet;
+  const details = video.contentDetails;
+  const stats = video.statistics;
+  
+  // Parse ISO 8601 duration (PT1H2M10S -> seconds)
+  const duration = details.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  const hours = parseInt(duration[1] || 0);
+  const minutes = parseInt(duration[2] || 0);
+  const seconds = parseInt(duration[3] || 0);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+  
+  return {
+    id: videoId,
+    title: snippet.title,
+    thumbnail: snippet.thumbnails.maxres?.url || snippet.thumbnails.high?.url || snippet.thumbnails.default?.url,
+    duration: totalSeconds,
+    uploader: snippet.channelTitle,
+    view_count: parseInt(stats.viewCount || 0),
+    formats: [], // API doesn't provide download URLs
+  };
+}
+
+/**
+ * Fallback: Extract video info from YouTube's oEmbed and webpage
+ * This works even when API is blocked
+ */
+async function getYouTubeInfoFallback(videoId) {
+  try {
+    console.log(`  ↳ Using oEmbed fallback...`);
+    
+    // Get basic info from oEmbed (always works)
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    const oembedData = await fetchUrl(oembedUrl);
+    const oembed = JSON.parse(oembedData);
+    
+    // Get additional info from noembed.com (third-party service)
+    let duration = 0;
+    try {
+      const noembedUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`;
+      const noembedData = await fetchUrl(noembedUrl);
+      const noembed = JSON.parse(noembedData);
+      duration = noembed.duration || 0;
+    } catch (e) {
+      console.log(`  ✗ noembed failed: ${e.message}`);
+    }
+    
+    // Build basic format list (we'll use yt-dlp for actual download)
+    const formats = [
+      { format_id: '18', ext: 'mp4', height: 360, vcodec: 'avc1', acodec: 'mp4a', format_note: '360p' },
+      { format_id: '22', ext: 'mp4', height: 720, vcodec: 'avc1', acodec: 'mp4a', format_note: '720p' },
+      { format_id: '137', ext: 'mp4', height: 1080, vcodec: 'avc1', acodec: 'none', format_note: '1080p' },
+      { format_id: '140', ext: 'm4a', height: null, vcodec: 'none', acodec: 'mp4a', format_note: '128kbps', abr: 128 },
+    ];
+    
+    console.log(`  ✓ oEmbed fallback success`);
+    
+    return {
+      id: videoId,
+      title: oembed.title || 'Video',
+      thumbnail: oembed.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+      duration: duration,
+      uploader: oembed.author_name || '',
+      view_count: 0,
+      formats,
+    };
+  } catch (e) {
+    console.log(`  ✗ oEmbed fallback failed: ${e.message}`);
+    throw new Error('All methods failed - video may be unavailable');
+  }
+}
+
+/**
+ * Simple oEmbed info getter for basic metadata
  */
 async function getOembedInfo(url) {
   const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
@@ -482,17 +572,68 @@ app.get('/api/info', async (req, res) => {
     // Extract video ID and use fast Innertube API
     const videoId = extractVideoId(url);
     if (videoId) {
-      console.log(`🚀 Using fast Innertube API for video: ${videoId}`);
+      console.log(`🚀 Fetching video: ${videoId}`);
+      
+      // Try Innertube API first
       try {
         output = await getYouTubeInfoFast(videoId);
         const elapsed = Date.now() - startTime;
         console.log(`⚡ Retrieved in ${elapsed}ms (Innertube API)`);
       } catch (innertubeErr) {
-        console.log(`  ✗ Innertube API failed: ${innertubeErr.message}`);
-        console.log(`  ↳ Falling back to yt-dlp...`);
-        output = await ytdlpFast(url);
-        const elapsed = Date.now() - startTime;
-        console.log(`🚀 Retrieved in ${elapsed}ms (yt-dlp fallback)`);
+        console.log(`  ✗ Innertube failed: ${innertubeErr.message}`);
+        
+        // Fallback to yt-dlp
+        console.log(`  ↳ Trying yt-dlp...`);
+        try {
+          output = await ytdlpFast(url);
+          const elapsed = Date.now() - startTime;
+          console.log(`🚀 Retrieved in ${elapsed}ms (yt-dlp)`);
+        } catch (ytdlpErr) {
+          console.log(`  ✗ yt-dlp failed: ${ytdlpErr.message}`);
+          
+          // Try YouTube Data API v3 if configured
+          if (process.env.YOUTUBE_API_KEY) {
+            try {
+              console.log(`  ↳ Trying YouTube Data API v3...`);
+              const apiData = await getYouTubeDataAPIInfo(videoId);
+              
+              return res.json({
+                videoDetails: {
+                  videoId: videoId,
+                  title: apiData.title,
+                  thumbnail: apiData.thumbnail,
+                  duration: apiData.duration,
+                  author: apiData.uploader,
+                  viewCount: apiData.view_count,
+                  originalUrl: url,
+                },
+                formats: [],
+                warning: 'Using YouTube Data API. Download functionality is limited. Video info only.'
+              });
+            } catch (apiErr) {
+              console.log(`  ✗ YouTube Data API failed: ${apiErr.message}`);
+            }
+          }
+          
+          // Final fallback: Use basic oEmbed for metadata only
+          console.log(`  ↳ Using oEmbed fallback...`);
+          const oembed = await getOembedInfo(url);
+          
+          // Return basic info with a message
+          return res.json({
+            videoDetails: {
+              videoId: videoId,
+              title: oembed.title || 'Video',
+              thumbnail: oembed.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+              duration: '',
+              author: oembed.author_name || '',
+              viewCount: '',
+              originalUrl: url,
+            },
+            formats: [],
+            warning: 'YouTube is temporarily blocking this server. Video info is limited. Downloads may not work. Please try again in a few minutes.'
+          });
+        }
       }
     } else {
       // Fallback to yt-dlp for non-standard URLs
