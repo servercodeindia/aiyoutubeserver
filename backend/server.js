@@ -40,7 +40,9 @@ const corsOptions = {
     'https://www.youtubeserver.com',
     'http://localhost:3000',
     'http://localhost:5000',
-    'http://127.0.0.1:3000'
+    'http://localhost:8080',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:8080'
   ],
   credentials: true,
   optionsSuccessStatus: 200
@@ -72,9 +74,13 @@ const BROWSERS_TO_TRY = ['chrome', 'edge', 'firefox'];
 let lastWorkingBrowser = 'chrome'; // Default to chrome
 let browserDetectionDone = false;
 
-// ── FAST: Skip browser detection, use chrome by default ──
-// This saves 5-10 seconds on startup
-console.log('🚀 Fast mode: Using chrome cookies by default');
+// ── FAST: Skip browser detection and cookies on production ──
+const isProduction = process.env.NODE_ENV === 'production';
+if (isProduction) {
+  console.log('🚀 Production mode: Skipping browser cookies');
+} else {
+  console.log('🚀 Fast mode: Using chrome cookies by default');
+}
 browserDetectionDone = true;
 
 /**
@@ -133,16 +139,21 @@ async function ytdlpFast(url) {
       return output;
     } catch (e) {
       console.log(`  ✗ Plain failed: ${e.message}`);
-      // If plain fails, try with cookies
-      try {
-        console.log(`  ↳ With cookies...`);
-        const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
-        console.log(`  ✓ Success`);
-        setCachedInfo(url, output);
-        return output;
-      } catch (e2) {
-        console.log(`  ✗ Cookies failed: ${e2.message}`);
-        throw new Error(`Could not retrieve video info: ${e2.message}`);
+      
+      // Only try cookies in development (not production)
+      if (!isProduction) {
+        try {
+          console.log(`  ↳ With cookies...`);
+          const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
+          console.log(`  ✓ Success`);
+          setCachedInfo(url, output);
+          return output;
+        } catch (e2) {
+          console.log(`  ✗ Cookies failed: ${e2.message}`);
+          throw new Error(`Could not retrieve video info: ${e2.message}`);
+        }
+      } else {
+        throw new Error(`Could not retrieve video info: ${e.message}`);
       }
     }
   }
