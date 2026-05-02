@@ -5,7 +5,60 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const youtubedl = require('yt-dlp-exec');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execPromise = promisify(exec);
+
+// Use standalone yt-dlp binary on production, npm package on dev
+const isProduction = process.env.NODE_ENV === 'production';
+const ytdlpPath = isProduction ? '/opt/render/project/src/yt-dlp' : 'yt-dlp';
+
+// Custom yt-dlp wrapper for production
+async function youtubedl(url, flags) {
+  if (!isProduction) {
+    // Use npm package in development
+    const youtubedlExec = require('yt-dlp-exec');
+    return youtubedlExec(url, flags);
+  }
+  
+  // Use standalone binary in production with better flags
+  const args = ['--dump-json', '--skip-download', '--no-warnings'];
+  
+  // Add all flags
+  if (flags.noCheckCertificates) args.push('--no-check-certificates');
+  if (flags.preferFreeFormats) args.push('--prefer-free-formats');
+  if (flags.noPlaylist) args.push('--no-playlist');
+  if (flags.socketTimeout) args.push('--socket-timeout', flags.socketTimeout);
+  if (flags.retries) args.push('--retries', flags.retries);
+  if (flags.fragmentRetries) args.push('--fragment-retries', flags.fragmentRetries);
+  if (flags.userAgent) args.push('--user-agent', flags.userAgent);
+  if (flags.addHeader) {
+    flags.addHeader.forEach(h => args.push('--add-header', h));
+  }
+  if (flags.geoBypass) args.push('--geo-bypass');
+  if (flags.geoBypassCountry) args.push('--geo-bypass-country', flags.geoBypassCountry);
+  if (flags.forceIpv4) args.push('--force-ipv4');
+  if (flags.extractorArgs) args.push('--extractor-args', flags.extractorArgs);
+  if (flags.sourceAddress) args.push('--source-address', flags.sourceAddress);
+  if (flags.format) args.push('--format', flags.format);
+  
+  args.push(url);
+  
+  const command = `${ytdlpPath} ${args.map(a => {
+    // Properly escape arguments with spaces or special characters
+    if (typeof a === 'string' && (a.includes(' ') || a.includes('&') || a.includes('|'))) {
+      return `"${a.replace(/"/g, '\\"')}"`;
+    }
+    return a;
+  }).join(' ')}`;
+  
+  try {
+    const { stdout } = await execPromise(command, { maxBuffer: 10 * 1024 * 1024 });
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(error.stderr || error.message);
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -36,6 +89,7 @@ function setCachedInfo(url, data) {
 const corsOptions = {
   origin: [
     FRONTEND_URL,
+    'https://youtubeserver.netlify.app', // Explicit fallback
     'https://youtubeserver.com',
     'https://www.youtubeserver.com',
     'http://localhost:3000',
@@ -75,7 +129,6 @@ let lastWorkingBrowser = 'chrome'; // Default to chrome
 let browserDetectionDone = false;
 
 // ── FAST: Skip browser detection and cookies on production ──
-const isProduction = process.env.NODE_ENV === 'production';
 if (isProduction) {
   console.log('🚀 Production mode: Skipping browser cookies');
 } else {
@@ -106,8 +159,8 @@ async function ytdlpFast(url) {
     preferFreeFormats: true,
     noPlaylist: true,
     socketTimeout: isTikTok ? 90 : 30,  // TikTok needs more time
-    retries: isTikTok ? 5 : 2,
-    fragmentRetries: isTikTok ? 5 : 2,
+    retries: isTikTok ? 5 : 3,
+    fragmentRetries: isTikTok ? 5 : 3,
     // Add headers to avoid bot detection on all platforms
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     addHeader: [
@@ -115,6 +168,11 @@ async function ytdlpFast(url) {
       'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     ],
   };
+  
+  // Add geo-bypass for YouTube to avoid regional blocks
+  if (isYouTube && isProduction) {
+    flags.geoBypass = true;
+  }
   
   // TikTok-specific configuration - use mobile user agent and proper headers
   if (isTikTok) {
@@ -135,33 +193,82 @@ async function ytdlpFast(url) {
     flags.extractorArgs = 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com';
   }
 
-  // For YouTube: try plain first (no cookies = faster)
+  // For YouTube: try multiple strategies to avoid bot detection
   if (isYouTube) {
+    // Strategy 1: Use embedded player extractor (bypasses bot detection)
     try {
-      console.log(`  ↳ Fast mode (no cookies)...`);
-      const output = await youtubedl(url, flags);
-      console.log(`  ✓ Success`);
+      console.log(`  ↳ YouTube strategy 1 (embedded player)...`);
+      const embedFlags = {
+        ...flags,
+        extractorArgs: 'youtube:player_client=web_embedded',
+      };
+      const output = await youtubedl(url, embedFlags);
+      console.log(`  ✓ Success (embedded player)`);
       setCachedInfo(url, output);
       return output;
     } catch (e) {
-      console.log(`  ✗ Plain failed: ${e.message}`);
-      
-      // Only try cookies in development (not production)
-      if (!isProduction) {
-        try {
-          console.log(`  ↳ With cookies...`);
-          const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
-          console.log(`  ✓ Success`);
-          setCachedInfo(url, output);
-          return output;
-        } catch (e2) {
-          console.log(`  ✗ Cookies failed: ${e2.message}`);
-          throw new Error(`Could not retrieve video info: ${e2.message}`);
-        }
-      } else {
-        throw new Error(`Could not retrieve video info: ${e.message}`);
+      console.log(`  ✗ Embedded player failed: ${e.message}`);
+    }
+
+    // Strategy 2: Use Android client
+    try {
+      console.log(`  ↳ YouTube strategy 2 (Android client)...`);
+      const androidFlags = {
+        ...flags,
+        extractorArgs: 'youtube:player_client=android',
+      };
+      const output = await youtubedl(url, androidFlags);
+      console.log(`  ✓ Success (Android client)`);
+      setCachedInfo(url, output);
+      return output;
+    } catch (e) {
+      console.log(`  ✗ Android client failed: ${e.message}`);
+    }
+
+    // Strategy 3: Use iOS client
+    try {
+      console.log(`  ↳ YouTube strategy 3 (iOS client)...`);
+      const iosFlags = {
+        ...flags,
+        extractorArgs: 'youtube:player_client=ios',
+      };
+      const output = await youtubedl(url, iosFlags);
+      console.log(`  ✓ Success (iOS client)`);
+      setCachedInfo(url, output);
+      return output;
+    } catch (e) {
+      console.log(`  ✗ iOS client failed: ${e.message}`);
+    }
+
+    // Strategy 4: Use TV embedded client
+    try {
+      console.log(`  ↳ YouTube strategy 4 (TV embedded)...`);
+      const tvFlags = {
+        ...flags,
+        extractorArgs: 'youtube:player_client=tv_embedded',
+      };
+      const output = await youtubedl(url, tvFlags);
+      console.log(`  ✓ Success (TV embedded)`);
+      setCachedInfo(url, output);
+      return output;
+    } catch (e) {
+      console.log(`  ✗ TV embedded failed: ${e.message}`);
+    }
+
+    // Strategy 5: Try with cookies (development only)
+    if (!isProduction) {
+      try {
+        console.log(`  ↳ YouTube strategy 5 (with cookies)...`);
+        const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
+        console.log(`  ✓ Success (with cookies)`);
+        setCachedInfo(url, output);
+        return output;
+      } catch (e) {
+        console.log(`  ✗ Cookies failed: ${e.message}`);
       }
     }
+
+    throw new Error(`YouTube is blocking requests. This video may be restricted or require authentication.`);
   }
 
   // For TikTok: try multiple approaches with different strategies
@@ -307,110 +414,174 @@ function extractVideoId(url) {
  * ULTRA-FAST YouTube info via Innertube API — ~200-500ms.
  * Direct API call to YouTube's internal endpoint.
  * Bypasses HTML parsing for maximum speed.
+ * Uses multiple client strategies to avoid bot detection.
  */
 async function getYouTubeInfoFast(videoId) {
-  try {
-    // Method 1: Direct Innertube API call (fastest)
-    const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-    const body = JSON.stringify({
-      videoId: videoId,
+  // Try multiple client types in order of preference
+  const clientStrategies = [
+    {
+      name: 'ANDROID',
       context: {
         client: {
-          clientName: 'WEB',
-          clientVersion: '2.20240304.00.00',
+          clientName: 'ANDROID',
+          clientVersion: '19.09.37',
+          androidSdkVersion: 30,
           hl: 'en',
           gl: 'US',
         }
-      }
-    });
-
-    const player = await new Promise((resolve, reject) => {
-      const req = https.request(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Origin': 'https://www.youtube.com',
-          'Referer': 'https://www.youtube.com/',
+      },
+      userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+    },
+    {
+      name: 'IOS',
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '19.09.3',
+          deviceModel: 'iPhone14,3',
+          hl: 'en',
+          gl: 'US',
         }
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (e) {
-            reject(new Error('Invalid JSON response'));
-          }
-        });
-      });
-      req.on('error', reject);
-      req.setTimeout(8000, () => {
-        req.destroy();
-        reject(new Error('Request timeout'));
-      });
-      req.write(body);
-      req.end();
-    });
-
-    if (player.playabilityStatus?.status !== 'OK') {
-      const reason = player.playabilityStatus?.reason || 'Video not available';
-      throw new Error(reason);
+      },
+      userAgent: 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+    },
+    {
+      name: 'WEB_EMBEDDED_PLAYER',
+      context: {
+        client: {
+          clientName: 'WEB_EMBEDDED_PLAYER',
+          clientVersion: '1.20240304.00.00',
+          hl: 'en',
+          gl: 'US',
+        }
+      },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    },
+    {
+      name: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      context: {
+        client: {
+          clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+          clientVersion: '2.0',
+          hl: 'en',
+          gl: 'US',
+        },
+        thirdParty: {
+          embedUrl: 'https://www.youtube.com/'
+        }
+      },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
+  ];
 
-    const vd = player.videoDetails || {};
-    const sd = player.streamingData || {};
-
-    // Build format list
-    const formats = [];
-    const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
-    
-    for (const f of allFormats) {
-      if (!f.url) continue;
+  for (const strategy of clientStrategies) {
+    try {
+      console.log(`  ↳ Trying ${strategy.name} client...`);
       
-      const mime = f.mimeType || '';
-      const isAudio = mime.startsWith('audio/');
-      const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
-      const codecParts = codecStr.split(',').map(c => c.trim());
-
-      let ext = 'mp4';
-      if (mime.includes('webm')) ext = 'webm';
-      else if (isAudio && mime.includes('mp4')) ext = 'm4a';
-
-      const dur = parseInt(vd.lengthSeconds) || 0;
-      const approxSize = f.contentLength
-        ? parseInt(f.contentLength)
-        : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
-
-      formats.push({
-        format_id: String(f.itag),
-        ext,
-        height: f.height || null,
-        width: f.width || null,
-        vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
-        acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
-        filesize: parseInt(f.contentLength) || null,
-        filesize_approx: approxSize,
-        url: f.url,
-        format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
-        abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
+      const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+      const body = JSON.stringify({
+        videoId: videoId,
+        context: strategy.context
       });
-    }
 
-    return {
-      id: vd.videoId || videoId,
-      title: vd.title || 'Video',
-      thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-      duration: parseInt(vd.lengthSeconds) || 0,
-      uploader: vd.author || '',
-      view_count: parseInt(vd.viewCount) || 0,
-      formats,
-    };
-  } catch (e) {
-    console.log(`  ✗ Innertube API failed: ${e.message}`);
-    throw e;
+      const player = await new Promise((resolve, reject) => {
+        const req = https.request(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            'User-Agent': strategy.userAgent,
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com/',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20240304.00.00',
+          }
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              reject(new Error('Invalid JSON response'));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(10000, () => {
+          req.destroy();
+          reject(new Error('Request timeout'));
+        });
+        req.write(body);
+        req.end();
+      });
+
+      if (player.playabilityStatus?.status !== 'OK') {
+        const reason = player.playabilityStatus?.reason || 'Video not available';
+        console.log(`  ✗ ${strategy.name} failed: ${reason}`);
+        continue; // Try next strategy
+      }
+
+      const vd = player.videoDetails || {};
+      const sd = player.streamingData || {};
+
+      // Build format list
+      const formats = [];
+      const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+      
+      for (const f of allFormats) {
+        if (!f.url && !f.signatureCipher && !f.cipher) continue;
+        
+        const mime = f.mimeType || '';
+        const isAudio = mime.startsWith('audio/');
+        const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
+        const codecParts = codecStr.split(',').map(c => c.trim());
+
+        let ext = 'mp4';
+        if (mime.includes('webm')) ext = 'webm';
+        else if (isAudio && mime.includes('mp4')) ext = 'm4a';
+
+        const dur = parseInt(vd.lengthSeconds) || 0;
+        const approxSize = f.contentLength
+          ? parseInt(f.contentLength)
+          : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
+
+        formats.push({
+          format_id: String(f.itag),
+          ext,
+          height: f.height || null,
+          width: f.width || null,
+          vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
+          acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
+          filesize: parseInt(f.contentLength) || null,
+          filesize_approx: approxSize,
+          url: f.url || null,
+          format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
+          abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
+        });
+      }
+
+      console.log(`  ✓ ${strategy.name} success with ${formats.length} formats`);
+
+      return {
+        id: vd.videoId || videoId,
+        title: vd.title || 'Video',
+        thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+        duration: parseInt(vd.lengthSeconds) || 0,
+        uploader: vd.author || '',
+        view_count: parseInt(vd.viewCount) || 0,
+        formats,
+      };
+    } catch (e) {
+      console.log(`  ✗ ${strategy.name} error: ${e.message}`);
+      continue; // Try next strategy
+    }
   }
+
+  // All strategies failed
+  throw new Error('All YouTube API strategies failed - video may be restricted');
 }
 
 // ── YouTube Info (ULTRA-FAST — Direct Innertube API) ──────────
