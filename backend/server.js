@@ -11,7 +11,7 @@ const execPromise = promisify(exec);
 
 // Use standalone yt-dlp binary on production, npm package on dev
 const isProduction = process.env.NODE_ENV === 'production';
-const ytdlpPath = isProduction ? '/opt/render/project/src/backend/yt-dlp' : 'yt-dlp';
+const ytdlpPath = isProduction ? '/opt/render/project/src/yt-dlp' : 'yt-dlp';
 
 // Custom yt-dlp wrapper for production
 async function youtubedl(url, flags) {
