@@ -193,165 +193,42 @@ async function ytdlpFast(url) {
     flags.extractorArgs = 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com';
   }
 
-  // For YouTube: try multiple strategies to avoid bot detection
+  // For YouTube: use Android client extractor (most reliable)
   if (isYouTube) {
-    // Strategy 1: Use embedded player extractor (bypasses bot detection)
     try {
-      console.log(`  ↳ YouTube strategy 1 (embedded player)...`);
-      const embedFlags = {
-        ...flags,
-        extractorArgs: 'youtube:player_client=web_embedded',
-      };
-      const output = await youtubedl(url, embedFlags);
-      console.log(`  ✓ Success (embedded player)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ Embedded player failed: ${e.message}`);
-    }
-
-    // Strategy 2: Use Android client
-    try {
-      console.log(`  ↳ YouTube strategy 2 (Android client)...`);
-      const androidFlags = {
+      console.log(`  ↳ YouTube (Android client)...`);
+      const output = await youtubedl(url, {
         ...flags,
         extractorArgs: 'youtube:player_client=android',
-      };
-      const output = await youtubedl(url, androidFlags);
-      console.log(`  ✓ Success (Android client)`);
+      });
+      console.log(`  ✓ Success`);
       setCachedInfo(url, output);
       return output;
     } catch (e) {
-      console.log(`  ✗ Android client failed: ${e.message}`);
+      console.log(`  ✗ Failed: ${e.message}`);
+      throw new Error(`YouTube video unavailable: ${e.message}`);
     }
-
-    // Strategy 3: Use iOS client
-    try {
-      console.log(`  ↳ YouTube strategy 3 (iOS client)...`);
-      const iosFlags = {
-        ...flags,
-        extractorArgs: 'youtube:player_client=ios',
-      };
-      const output = await youtubedl(url, iosFlags);
-      console.log(`  ✓ Success (iOS client)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ iOS client failed: ${e.message}`);
-    }
-
-    // Strategy 4: Use TV embedded client
-    try {
-      console.log(`  ↳ YouTube strategy 4 (TV embedded)...`);
-      const tvFlags = {
-        ...flags,
-        extractorArgs: 'youtube:player_client=tv_embedded',
-      };
-      const output = await youtubedl(url, tvFlags);
-      console.log(`  ✓ Success (TV embedded)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ TV embedded failed: ${e.message}`);
-    }
-
-    // Strategy 5: Try with cookies (development only)
-    if (!isProduction) {
-      try {
-        console.log(`  ↳ YouTube strategy 5 (with cookies)...`);
-        const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
-        console.log(`  ✓ Success (with cookies)`);
-        setCachedInfo(url, output);
-        return output;
-      } catch (e) {
-        console.log(`  ✗ Cookies failed: ${e.message}`);
-      }
-    }
-
-    throw new Error(`YouTube is blocking requests. This video may be restricted or require authentication.`);
   }
 
-  // For TikTok: try multiple approaches with different strategies
+  // For TikTok: use simple approach (most reliable)
   if (isTikTok) {
-    // Approach 1: Try without any special flags first (sometimes simpler is better)
     try {
-      console.log(`  ↳ TikTok attempt 1 (simple)...`);
-      const simpleFlags = {
+      console.log(`  ↳ TikTok download...`);
+      const output = await youtubedl(url, {
         dumpJson: true,
         skipDownload: true,
         noWarnings: true,
         noPlaylist: true,
-        socketTimeout: 90,
-        retries: 5,
-      };
-      const output = await youtubedl(url, simpleFlags);
-      console.log(`  ✓ TikTok Success (simple)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ TikTok attempt 1 failed: ${e.message}`);
-    }
-
-    // Approach 2: Try with geo bypass
-    try {
-      console.log(`  ↳ TikTok attempt 2 (geo bypass)...`);
-      const geoFlags = {
-        dumpJson: true,
-        skipDownload: true,
-        noWarnings: true,
-        noPlaylist: true,
-        socketTimeout: 90,
-        retries: 5,
-        geoBypass: true,
-        geoBypassCountry: 'US',
-      };
-      const output = await youtubedl(url, geoFlags);
-      console.log(`  ✓ TikTok Success (geo bypass)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ TikTok attempt 2 failed: ${e.message}`);
-    }
-
-    // Approach 3: Try with different user agent
-    try {
-      console.log(`  ↳ TikTok attempt 3 (desktop UA)...`);
-      const desktopFlags = {
-        dumpJson: true,
-        skipDownload: true,
-        noWarnings: true,
-        noPlaylist: true,
-        socketTimeout: 90,
-        retries: 5,
+        socketTimeout: 60,
+        retries: 3,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      };
-      const output = await youtubedl(url, desktopFlags);
-      console.log(`  ✓ TikTok Success (desktop UA)`);
+      });
+      console.log(`  ✓ TikTok Success`);
       setCachedInfo(url, output);
       return output;
     } catch (e) {
-      console.log(`  ✗ TikTok attempt 3 failed: ${e.message}`);
-    }
-
-    // Approach 4: Try with source address (force different network interface)
-    try {
-      console.log(`  ↳ TikTok attempt 4 (source address)...`);
-      const sourceFlags = {
-        dumpJson: true,
-        skipDownload: true,
-        noWarnings: true,
-        noPlaylist: true,
-        socketTimeout: 90,
-        retries: 5,
-        sourceAddress: '0.0.0.0',
-      };
-      const output = await youtubedl(url, sourceFlags);
-      console.log(`  ✓ TikTok Success (source address)`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ TikTok attempt 4 failed: ${e.message}`);
-      throw new Error(`TikTok is currently blocking downloads from your region. This is a TikTok restriction, not a limitation of our service. Please try again later or use a VPN.`);
+      console.log(`  ✗ TikTok failed: ${e.message}`);
+      throw new Error(`TikTok video unavailable. Please try again later.`);
     }
   }
 
@@ -413,175 +290,107 @@ function extractVideoId(url) {
 /**
  * ULTRA-FAST YouTube info via Innertube API — ~200-500ms.
  * Direct API call to YouTube's internal endpoint.
- * Bypasses HTML parsing for maximum speed.
- * Uses multiple client strategies to avoid bot detection.
+ * Uses ANDROID client (most reliable against bot detection).
  */
 async function getYouTubeInfoFast(videoId) {
-  // Try multiple client types in order of preference
-  const clientStrategies = [
-    {
-      name: 'ANDROID',
-      context: {
-        client: {
-          clientName: 'ANDROID',
-          clientVersion: '19.09.37',
-          androidSdkVersion: 30,
-          hl: 'en',
-          gl: 'US',
-        }
-      },
-      userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
-    },
-    {
-      name: 'IOS',
-      context: {
-        client: {
-          clientName: 'IOS',
-          clientVersion: '19.09.3',
-          deviceModel: 'iPhone14,3',
-          hl: 'en',
-          gl: 'US',
-        }
-      },
-      userAgent: 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
-    },
-    {
-      name: 'WEB_EMBEDDED_PLAYER',
-      context: {
-        client: {
-          clientName: 'WEB_EMBEDDED_PLAYER',
-          clientVersion: '1.20240304.00.00',
-          hl: 'en',
-          gl: 'US',
-        }
-      },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    },
-    {
-      name: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-      context: {
-        client: {
-          clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
-          clientVersion: '2.0',
-          hl: 'en',
-          gl: 'US',
-        },
-        thirdParty: {
-          embedUrl: 'https://www.youtube.com/'
-        }
-      },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-  ];
-
-  for (const strategy of clientStrategies) {
-    try {
-      console.log(`  ↳ Trying ${strategy.name} client...`);
-      
-      const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-      const body = JSON.stringify({
-        videoId: videoId,
-        context: strategy.context
-      });
-
-      const player = await new Promise((resolve, reject) => {
-        const req = https.request(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-            'User-Agent': strategy.userAgent,
-            'Origin': 'https://www.youtube.com',
-            'Referer': 'https://www.youtube.com/',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.20240304.00.00',
-          }
-        }, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              resolve(JSON.parse(data));
-            } catch (e) {
-              reject(new Error('Invalid JSON response'));
-            }
-          });
-        });
-        req.on('error', reject);
-        req.setTimeout(10000, () => {
-          req.destroy();
-          reject(new Error('Request timeout'));
-        });
-        req.write(body);
-        req.end();
-      });
-
-      if (player.playabilityStatus?.status !== 'OK') {
-        const reason = player.playabilityStatus?.reason || 'Video not available';
-        console.log(`  ✗ ${strategy.name} failed: ${reason}`);
-        continue; // Try next strategy
+  // Use ANDROID client - most reliable and fastest
+  const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+  const body = JSON.stringify({
+    videoId: videoId,
+    context: {
+      client: {
+        clientName: 'ANDROID',
+        clientVersion: '19.09.37',
+        androidSdkVersion: 30,
+        hl: 'en',
+        gl: 'US',
       }
-
-      const vd = player.videoDetails || {};
-      const sd = player.streamingData || {};
-
-      // Build format list
-      const formats = [];
-      const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
-      
-      for (const f of allFormats) {
-        if (!f.url && !f.signatureCipher && !f.cipher) continue;
-        
-        const mime = f.mimeType || '';
-        const isAudio = mime.startsWith('audio/');
-        const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
-        const codecParts = codecStr.split(',').map(c => c.trim());
-
-        let ext = 'mp4';
-        if (mime.includes('webm')) ext = 'webm';
-        else if (isAudio && mime.includes('mp4')) ext = 'm4a';
-
-        const dur = parseInt(vd.lengthSeconds) || 0;
-        const approxSize = f.contentLength
-          ? parseInt(f.contentLength)
-          : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
-
-        formats.push({
-          format_id: String(f.itag),
-          ext,
-          height: f.height || null,
-          width: f.width || null,
-          vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
-          acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
-          filesize: parseInt(f.contentLength) || null,
-          filesize_approx: approxSize,
-          url: f.url || null,
-          format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
-          abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
-        });
-      }
-
-      console.log(`  ✓ ${strategy.name} success with ${formats.length} formats`);
-
-      return {
-        id: vd.videoId || videoId,
-        title: vd.title || 'Video',
-        thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-        duration: parseInt(vd.lengthSeconds) || 0,
-        uploader: vd.author || '',
-        view_count: parseInt(vd.viewCount) || 0,
-        formats,
-      };
-    } catch (e) {
-      console.log(`  ✗ ${strategy.name} error: ${e.message}`);
-      continue; // Try next strategy
     }
+  });
+
+  const player = await new Promise((resolve, reject) => {
+    const req = https.request(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(new Error('Invalid JSON response'));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+    req.write(body);
+    req.end();
+  });
+
+  if (player.playabilityStatus?.status !== 'OK') {
+    const reason = player.playabilityStatus?.reason || 'Video not available';
+    throw new Error(reason);
   }
 
-  // All strategies failed
-  throw new Error('All YouTube API strategies failed - video may be restricted');
+  const vd = player.videoDetails || {};
+  const sd = player.streamingData || {};
+
+  // Build format list
+  const formats = [];
+  const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+  
+  for (const f of allFormats) {
+    if (!f.url && !f.signatureCipher && !f.cipher) continue;
+    
+    const mime = f.mimeType || '';
+    const isAudio = mime.startsWith('audio/');
+    const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
+    const codecParts = codecStr.split(',').map(c => c.trim());
+
+    let ext = 'mp4';
+    if (mime.includes('webm')) ext = 'webm';
+    else if (isAudio && mime.includes('mp4')) ext = 'm4a';
+
+    const dur = parseInt(vd.lengthSeconds) || 0;
+    const approxSize = f.contentLength
+      ? parseInt(f.contentLength)
+      : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
+
+    formats.push({
+      format_id: String(f.itag),
+      ext,
+      height: f.height || null,
+      width: f.width || null,
+      vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
+      acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
+      filesize: parseInt(f.contentLength) || null,
+      filesize_approx: approxSize,
+      url: f.url || null,
+      format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
+      abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
+    });
+  }
+
+  return {
+    id: vd.videoId || videoId,
+    title: vd.title || 'Video',
+    thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+    duration: parseInt(vd.lengthSeconds) || 0,
+    uploader: vd.author || '',
+    view_count: parseInt(vd.viewCount) || 0,
+    formats,
+  };
 }
 
 // ── YouTube Info (ULTRA-FAST — Direct Innertube API) ──────────
