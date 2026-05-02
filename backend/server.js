@@ -619,7 +619,7 @@ app.get('/api/info', async (req, res) => {
           console.log(`  ↳ Using oEmbed fallback...`);
           const oembed = await getOembedInfo(url);
           
-          // Return basic info with a message
+          // Return basic info with default formats that yt-dlp can handle during download
           return res.json({
             videoDetails: {
               videoId: videoId,
@@ -630,8 +630,48 @@ app.get('/api/info', async (req, res) => {
               viewCount: '',
               originalUrl: url,
             },
-            formats: [],
-            warning: 'YouTube is temporarily blocking this server. Video info is limited. Downloads may not work. Please try again in a few minutes.'
+            formats: [
+              {
+                quality: '1080p',
+                height: 1080,
+                itag: 'best',
+                container: 'mp4',
+                contentLength: null,
+                type: 'video',
+              },
+              {
+                quality: '720p',
+                height: 720,
+                itag: '720',
+                container: 'mp4',
+                contentLength: null,
+                type: 'video',
+              },
+              {
+                quality: '480p',
+                height: 480,
+                itag: '480',
+                container: 'mp4',
+                contentLength: null,
+                type: 'video',
+              },
+              {
+                quality: '360p',
+                height: 360,
+                itag: '360',
+                container: 'mp4',
+                contentLength: null,
+                type: 'video',
+              },
+              {
+                quality: 'Audio',
+                container: 'mp3',
+                itag: 'audio',
+                contentLength: null,
+                type: 'audio',
+              }
+            ],
+            warning: 'YouTube is temporarily blocking this server. Using fallback mode. Downloads will be attempted with best available quality.'
           });
         }
       }
@@ -765,7 +805,12 @@ app.get('/api/download', async (req, res) => {
     if (isAudio) {
       formatStr = 'bestaudio[ext=m4a]/bestaudio/best';
     } else {
-      if (quality) {
+      // Handle fallback format IDs (best, 720, 480, 360, audio)
+      if (itag === 'best' || !quality) {
+        formatStr = 'best[ext=mp4][acodec!=none]/best[acodec!=none]/best';
+      } else if (itag === 'audio') {
+        formatStr = 'bestaudio[ext=m4a]/bestaudio/best';
+      } else if (quality) {
         const h = parseInt(quality) || 720;
         formatStr = `best[height<=${h}][ext=mp4][acodec!=none]/best[height<=${h}][acodec!=none]/best[height<=${h}]/best`;
       } else {
@@ -776,7 +821,7 @@ app.get('/api/download', async (req, res) => {
     console.log(`  ↳ Format: ${formatStr}`);
     console.log(`  ↳ Getting direct URL from yt-dlp...`);
 
-    // Get the direct download URL using yt-dlp (fast, no download)
+    // Get the direct download URL using yt-dlp with multiple strategies
     const dlFlags = {
       dumpJson: true,
       skipDownload: true,
@@ -784,17 +829,34 @@ app.get('/api/download', async (req, res) => {
       noWarnings: true,
       noCheckCertificates: true,
       noPlaylist: true,
+      socketTimeout: 20,
+      retries: 2,
     };
 
-    // Use cookie file or cached browser for speed
-    const cookieArgs = getCookieArgsForExec();
     let info;
-    try {
-      info = await youtubedl(url, { ...dlFlags, ...cookieArgs });
-      console.log(`  ↳ Got direct URL with cookies`);
-    } catch (e) {
-      info = await youtubedl(url, dlFlags);
-      console.log(`  ↳ Got direct URL without cookies`);
+    const strategies = [
+      { name: 'Android', args: 'youtube:player_client=android' },
+      { name: 'iOS', args: 'youtube:player_client=ios' },
+      { name: 'Web Embedded', args: 'youtube:player_client=web_embedded' },
+    ];
+
+    // Try multiple strategies
+    for (const strat of strategies) {
+      try {
+        console.log(`  ↳ Trying ${strat.name}...`);
+        info = await youtubedl(url, { ...dlFlags, extractorArgs: strat.args });
+        console.log(`  ✓ Got URL with ${strat.name}`);
+        break;
+      } catch (e) {
+        console.log(`  ✗ ${strat.name} failed: ${e.message}`);
+        if (strat === strategies[strategies.length - 1]) {
+          throw new Error('All download strategies failed. YouTube may be blocking this server.');
+        }
+      }
+    }
+
+    if (!info) {
+      throw new Error('Failed to get download URL');
     }
 
     // Extract the direct URL
