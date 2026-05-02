@@ -108,6 +108,12 @@ async function ytdlpFast(url) {
     socketTimeout: isTikTok ? 90 : 30,  // TikTok needs more time
     retries: isTikTok ? 5 : 2,
     fragmentRetries: isTikTok ? 5 : 2,
+    // Add headers to avoid bot detection on all platforms
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    addHeader: [
+      'Accept-Language:en-US,en;q=0.9',
+      'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    ],
   };
   
   // TikTok-specific configuration - use mobile user agent and proper headers
@@ -251,16 +257,21 @@ async function ytdlpFast(url) {
     return output;
   } catch (e) {
     console.log(`  ✗ Plain failed: ${e.message}`);
-    // If plain fails, try with cookies
-    try {
-      console.log(`  ↳ With cookies...`);
-      const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
-      console.log(`  ✓ Success`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e2) {
-      console.log(`  ✗ Cookies failed: ${e2.message}`);
-      throw new Error(`Could not retrieve video info: ${e2.message}`);
+    
+    // Only try cookies in development (not production)
+    if (!isProduction) {
+      try {
+        console.log(`  ↳ With cookies...`);
+        const output = await youtubedl(url, { ...flags, cookiesFromBrowser: lastWorkingBrowser });
+        console.log(`  ✓ Success`);
+        setCachedInfo(url, output);
+        return output;
+      } catch (e2) {
+        console.log(`  ✗ Cookies failed: ${e2.message}`);
+        throw new Error(`Could not retrieve video info: ${e2.message}`);
+      }
+    } else {
+      throw new Error(`Could not retrieve video info: ${e.message}`);
     }
   }
 }
@@ -269,6 +280,10 @@ async function ytdlpFast(url) {
  * Get the best cookie browser arg for download exec calls.
  */
 function getCookieArgsForExec() {
+  // Skip cookies in production
+  if (isProduction) {
+    return {};
+  }
   return { cookiesFromBrowser: lastWorkingBrowser };
 }
 
