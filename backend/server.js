@@ -11,7 +11,7 @@ const execPromise = promisify(exec);
 
 // Use standalone yt-dlp binary on production, npm package on dev
 const isProduction = process.env.NODE_ENV === 'production';
-const ytdlpPath = isProduction ? '/opt/render/project/src/yt-dlp' : 'yt-dlp';
+const ytdlpPath = isProduction ? '/opt/render/project/src/backend/yt-dlp' : 'yt-dlp';
 
 // Custom yt-dlp wrapper for production
 async function youtubedl(url, flags) {
@@ -193,21 +193,34 @@ async function ytdlpFast(url) {
     flags.extractorArgs = 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com';
   }
 
-  // For YouTube: use Android client extractor (most reliable)
+  // For YouTube: try multiple yt-dlp strategies
   if (isYouTube) {
-    try {
-      console.log(`  ↳ YouTube (Android client)...`);
-      const output = await youtubedl(url, {
-        ...flags,
-        extractorArgs: 'youtube:player_client=android',
-      });
-      console.log(`  ✓ Success`);
-      setCachedInfo(url, output);
-      return output;
-    } catch (e) {
-      console.log(`  ✗ Failed: ${e.message}`);
-      throw new Error(`YouTube video unavailable: ${e.message}`);
+    const ytStrategies = [
+      { name: 'Android', args: 'youtube:player_client=android' },
+      { name: 'iOS', args: 'youtube:player_client=ios' },
+      { name: 'Web Embedded', args: 'youtube:player_client=web_embedded' },
+      { name: 'TV Embedded', args: 'youtube:player_client=tv_embedded' },
+    ];
+
+    for (const strat of ytStrategies) {
+      try {
+        console.log(`  ↳ yt-dlp ${strat.name}...`);
+        const output = await youtubedl(url, {
+          ...flags,
+          extractorArgs: strat.args,
+          socketTimeout: 15,
+          retries: 2,
+        });
+        console.log(`  ✓ Success`);
+        setCachedInfo(url, output);
+        return output;
+      } catch (e) {
+        console.log(`  ✗ ${strat.name} failed`);
+        continue;
+      }
     }
+    
+    throw new Error(`YouTube is blocking this server's IP address. Please try again later or contact support.`);
   }
 
   // For TikTok: use simple approach (most reliable)
@@ -290,107 +303,163 @@ function extractVideoId(url) {
 /**
  * ULTRA-FAST YouTube info via Innertube API — ~200-500ms.
  * Direct API call to YouTube's internal endpoint.
- * Uses ANDROID client (most reliable against bot detection).
+ * Uses multiple client strategies to bypass bot detection.
  */
 async function getYouTubeInfoFast(videoId) {
-  // Use ANDROID client - most reliable and fastest
-  const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-  const body = JSON.stringify({
-    videoId: videoId,
-    context: {
-      client: {
-        clientName: 'ANDROID',
-        clientVersion: '19.09.37',
-        androidSdkVersion: 30,
-        hl: 'en',
-        gl: 'US',
-      }
+  // Try multiple client types - each has different rate limits
+  const strategies = [
+    {
+      name: 'ANDROID',
+      context: {
+        client: {
+          clientName: 'ANDROID',
+          clientVersion: '19.09.37',
+          androidSdkVersion: 30,
+          hl: 'en',
+          gl: 'US',
+        }
+      },
+      userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+    },
+    {
+      name: 'IOS',
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '19.09.3',
+          deviceModel: 'iPhone14,3',
+          hl: 'en',
+          gl: 'US',
+        }
+      },
+      userAgent: 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+    },
+    {
+      name: 'MWEB',
+      context: {
+        client: {
+          clientName: 'MWEB',
+          clientVersion: '2.20240304.08.00',
+          hl: 'en',
+          gl: 'US',
+        }
+      },
+      userAgent: 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
     }
-  });
+  ];
 
-  const player = await new Promise((resolve, reject) => {
-    const req = https.request(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(new Error('Invalid JSON response'));
+  let lastError = null;
+
+  for (const strategy of strategies) {
+    try {
+      console.log(`  ↳ Trying ${strategy.name}...`);
+      
+      const apiUrl = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+      const body = JSON.stringify({
+        videoId: videoId,
+        context: strategy.context,
+        playbackContext: {
+          contentPlaybackContext: {
+            html5Preference: 'HTML5_PREF_WANTS'
+          }
         }
       });
-    });
-    req.on('error', reject);
-    req.setTimeout(5000, () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
-    req.write(body);
-    req.end();
-  });
 
-  if (player.playabilityStatus?.status !== 'OK') {
-    const reason = player.playabilityStatus?.reason || 'Video not available';
-    throw new Error(reason);
+      const player = await new Promise((resolve, reject) => {
+        const req = https.request(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            'User-Agent': strategy.userAgent,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+          }
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              reject(new Error('Invalid JSON response'));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(8000, () => {
+          req.destroy();
+          reject(new Error('Timeout'));
+        });
+        req.write(body);
+        req.end();
+      });
+
+      if (player.playabilityStatus?.status !== 'OK') {
+        const reason = player.playabilityStatus?.reason || 'Unavailable';
+        lastError = reason;
+        console.log(`  ✗ ${strategy.name}: ${reason}`);
+        continue;
+      }
+
+      const vd = player.videoDetails || {};
+      const sd = player.streamingData || {};
+
+      // Build format list
+      const formats = [];
+      const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+      
+      for (const f of allFormats) {
+        if (!f.url && !f.signatureCipher && !f.cipher) continue;
+        
+        const mime = f.mimeType || '';
+        const isAudio = mime.startsWith('audio/');
+        const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
+        const codecParts = codecStr.split(',').map(c => c.trim());
+
+        let ext = 'mp4';
+        if (mime.includes('webm')) ext = 'webm';
+        else if (isAudio && mime.includes('mp4')) ext = 'm4a';
+
+        const dur = parseInt(vd.lengthSeconds) || 0;
+        const approxSize = f.contentLength
+          ? parseInt(f.contentLength)
+          : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
+
+        formats.push({
+          format_id: String(f.itag),
+          ext,
+          height: f.height || null,
+          width: f.width || null,
+          vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
+          acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
+          filesize: parseInt(f.contentLength) || null,
+          filesize_approx: approxSize,
+          url: f.url || null,
+          format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
+          abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
+        });
+      }
+
+      console.log(`  ✓ ${strategy.name} success`);
+
+      return {
+        id: vd.videoId || videoId,
+        title: vd.title || 'Video',
+        thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+        duration: parseInt(vd.lengthSeconds) || 0,
+        uploader: vd.author || '',
+        view_count: parseInt(vd.viewCount) || 0,
+        formats,
+      };
+    } catch (e) {
+      lastError = e.message;
+      console.log(`  ✗ ${strategy.name}: ${e.message}`);
+      continue;
+    }
   }
 
-  const vd = player.videoDetails || {};
-  const sd = player.streamingData || {};
-
-  // Build format list
-  const formats = [];
-  const allFormats = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
-  
-  for (const f of allFormats) {
-    if (!f.url && !f.signatureCipher && !f.cipher) continue;
-    
-    const mime = f.mimeType || '';
-    const isAudio = mime.startsWith('audio/');
-    const codecStr = (mime.match(/codecs="([^"]*)"/) || [])[1] || '';
-    const codecParts = codecStr.split(',').map(c => c.trim());
-
-    let ext = 'mp4';
-    if (mime.includes('webm')) ext = 'webm';
-    else if (isAudio && mime.includes('mp4')) ext = 'm4a';
-
-    const dur = parseInt(vd.lengthSeconds) || 0;
-    const approxSize = f.contentLength
-      ? parseInt(f.contentLength)
-      : (f.averageBitrate && dur ? Math.round(f.averageBitrate * dur / 8) : null);
-
-    formats.push({
-      format_id: String(f.itag),
-      ext,
-      height: f.height || null,
-      width: f.width || null,
-      vcodec: isAudio ? 'none' : (codecParts[0] || 'avc1'),
-      acodec: isAudio ? (codecParts[0] || 'mp4a') : (codecParts.length > 1 ? codecParts[1] : 'none'),
-      filesize: parseInt(f.contentLength) || null,
-      filesize_approx: approxSize,
-      url: f.url || null,
-      format_note: f.qualityLabel || (isAudio ? `${Math.round((f.averageBitrate || f.bitrate || 0) / 1000)}kbps` : ''),
-      abr: isAudio ? Math.round((f.averageBitrate || f.bitrate || 0) / 1000) : null,
-    });
-  }
-
-  return {
-    id: vd.videoId || videoId,
-    title: vd.title || 'Video',
-    thumbnail: vd.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-    duration: parseInt(vd.lengthSeconds) || 0,
-    uploader: vd.author || '',
-    view_count: parseInt(vd.viewCount) || 0,
-    formats,
-  };
+  throw new Error(lastError || 'All strategies failed');
 }
 
 // ── YouTube Info (ULTRA-FAST — Direct Innertube API) ──────────
@@ -434,9 +503,24 @@ app.get('/api/info', async (req, res) => {
     }
   } catch (err) {
     console.error('Error:', err.message);
-    return res.status(500).json({
-      error: 'Failed to retrieve video info. The video may be private or unavailable.',
-    });
+    
+    // Provide helpful error messages
+    let errorMsg = 'Failed to retrieve video info.';
+    if (err.message.includes('Sign in to confirm')) {
+      errorMsg = 'YouTube is blocking requests from this server. This is a temporary issue. Please try again in a few minutes.';
+    } else if (err.message.includes('bot')) {
+      errorMsg = 'YouTube detected automated access. Please try again later.';
+    } else if (err.message.includes('blocking')) {
+      errorMsg = err.message;
+    } else if (err.message.includes('private')) {
+      errorMsg = 'This video is private or unavailable.';
+    } else if (err.message.includes('Timeout')) {
+      errorMsg = 'Request timed out. The video server may be slow. Please try again.';
+    } else {
+      errorMsg = `Unable to retrieve video: ${err.message}`;
+    }
+    
+    return res.status(500).json({ error: errorMsg });
   }
 
   // ── Build response ──
